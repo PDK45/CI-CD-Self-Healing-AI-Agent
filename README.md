@@ -1,89 +1,118 @@
-# CI/CD Self-Healing AI Agent — Neoverse
+# 🤖 Neoverse — CI/CD Self-Healing AI Agent
 
-An intelligent AI-powered SaaS platform that autonomously monitors and self-heals failing CI/CD pipelines using **Google Gemini**, **LangChain**, and **LangGraph**.
+An AI-powered SaaS platform that autonomously detects, diagnoses, and fixes failing CI/CD pipelines. When a GitHub Actions build fails, the system intercepts the webhook, analyzes logs using a multi-agent AI debate loop, generates a code patch, and opens a Pull Request — all without human intervention.
 
-## 🚀 Features
+> **AI Model:** Groq · Llama 3.3-70B · Free Tier · ~14,400 requests/day
 
-- **Autonomous Pipeline Healing** — Monitors GitHub webhook events, analyzes failures, and auto-generates fixes
-- **Multi-Agent AI Debate** — A LangGraph loop of Diagnostician → Researcher → Solver ↔ Critic agents
-- **Live Gemini Chat** — Conversational AI interface for developers to query the agent directly
-- **SaaS Dashboard** — Premium dark-mode UI showing pipeline statuses and agent thought processes
-- **GitHub Integration** — Automatically creates branches and opens Pull Requests with AI-generated fixes
+---
 
-## 🏗️ Architecture
+## 🎯 How It Works
 
 ```
-GitHub Webhook (failure)
+GitHub Webhook (failure detected)
         ↓
-  Diagnostician  →  Identifies root cause from CI logs
+  Diagnostician  →  Reads CI logs, identifies root cause
         ↓
-   Researcher    →  Fetches failing source files via GitHub API
+   Researcher    →  Fetches the failing source files via GitHub API
         ↓
-    Solver       →  Generates a code patch (diff)
+    Solver       →  Generates a code patch (diff) to fix the issue
         ↓
-    Critic       →  Reviews the patch for quality/security
+    Critic       →  Reviews patch for correctness & security
         ↓
-  [APPROVE] ──→  Creates Branch → Opens PR on GitHub
-  [REJECT]  ──→  Back to Solver (max 3 loops)
+  [APPROVED] ──→  Creates branch → Opens Pull Request on GitHub
+  [REJECTED]  ──→  Loops back to Solver (max 3 iterations)
 ```
+
+---
+
+## ✅ Current Status (MVP Complete)
+
+| Phase | Status |
+|---|---|
+| System Architecture & Design | ✅ Complete |
+| FastAPI Backend & GitHub Webhook Engine | ✅ Complete |
+| LangGraph Multi-Agent Orchestration | ✅ Complete |
+| Conversational Chat API (`/chat`) | ✅ Complete |
+| SaaS Dashboard (dark-mode UI) | ✅ Complete |
+| End-to-End Test with Real Repo | 🔲 Next |
+| Sandbox Testing (Docker) | 🔲 Upcoming |
+| Production Deployment | 🔲 Upcoming |
+
+---
 
 ## 🛠️ Tech Stack
 
-- **Backend**: Python, FastAPI, Uvicorn
-- **AI**: Google Gemini 2.0 Flash via LangChain
-- **Orchestration**: LangGraph (multi-agent state machine)
-- **Frontend**: Tailwind CSS, Vanilla JS (served via Jinja2)
-- **GitHub API**: HTTPX
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.x, FastAPI, Uvicorn |
+| AI Model | Groq — Llama 3.3-70B (free) |
+| AI Orchestration | LangChain, LangGraph |
+| GitHub Integration | GitHub REST API (HTTPX) |
+| Frontend | Tailwind CSS, Vanilla JS, Jinja2 |
 
-## ⚙️ Setup
+---
 
-### 1. Install dependencies
+## ⚙️ Setup & Run
+
+### 1. Clone the repo
 ```bash
-cd backend
+git clone https://github.com/PDK45/CI-CD-Self-Healing-AI-Agent.git
+cd CI-CD-Self-Healing-AI-Agent/backend
+```
+
+### 2. Create virtual environment & install dependencies
+```bash
 python -m venv venv
-.\venv\Scripts\Activate.ps1  # Windows
+.\venv\Scripts\Activate.ps1        # Windows
+# source venv/bin/activate         # Mac/Linux
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
-Create a `.env` file in the `backend/` directory:
+### 3. Configure environment variables
+Create a `.env` file inside the `backend/` folder:
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 GITHUB_TOKEN=your_github_personal_access_token_here
 PORT=8000
 ```
 
-Get your free **Gemini API key** from: [aistudio.google.com](https://aistudio.google.com)
+Get your **free Groq API key** at: [console.groq.com](https://console.groq.com) (takes 30 seconds)
 
-### 3. Run the server
+### 4. Run the server
 ```bash
 python main.py
 ```
 
-Open **[http://localhost:8000](http://localhost:8000)** in your browser.
+Open **[http://localhost:8000](http://localhost:8000)** — the dashboard will load with a live AI chat.
+
+---
 
 ## 📁 Project Structure
 
 ```
 backend/
-├── main.py                    # FastAPI server, /chat and /webhook endpoints
-├── requirements.txt           # Python dependencies
-├── .env                       # API keys (not committed to git)
+├── main.py                    # FastAPI server — /chat (streaming) and /webhook endpoints
+├── requirements.txt
+├── .env                       # API keys (not committed)
 ├── templates/
 │   └── index.html             # SaaS Dashboard UI
 └── agent/
     ├── graph.py               # LangGraph state machine wiring
-    ├── nodes.py               # AI agent nodes (Diagnostician, Solver, Critic)
-    ├── state.py               # Shared state schema
-    ├── context_builder.py     # Log parser — extracts error traces
+    ├── nodes.py               # AI agents: Diagnostician, Researcher, Solver, Critic
+    ├── state.py               # Shared agent state schema
+    ├── context_builder.py     # CI log parser — extracts exact error traces
     └── tools/
-        └── github_service.py  # GitHub API wrapper
+        └── github_service.py  # GitHub API: fetch logs, create branches, open PRs
 ```
 
-## 🔗 GitHub Webhook Setup
+---
 
-To connect a real repository:
-1. Go to your GitHub repo → **Settings** → **Webhooks** → **Add webhook**
-2. Set Payload URL to: `https://your-server-url/webhook`
-3. Content type: `application/json`
-4. Events: Select **Workflow runs**
+## 🔗 Connect a Real GitHub Repository
+
+1. Run the server with a public URL (e.g. via [ngrok](https://ngrok.com): `ngrok http 8000`)
+2. Go to your GitHub repo → **Settings → Webhooks → Add webhook**
+3. Set Payload URL to: `https://your-ngrok-url/webhook`
+4. Content type: `application/json`
+5. Select event: **Workflow runs**
+
+When a CI build fails, the agent loop triggers automatically and opens a PR with the fix.
