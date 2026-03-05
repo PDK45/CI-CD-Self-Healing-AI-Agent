@@ -1,8 +1,10 @@
 import os
 import httpx
-import tempfile
-import zipfile
-from pydantic import BaseModel
+from dotenv import load_dotenv
+
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(dotenv_path)
+
 
 class GithubService:
     def __init__(self):
@@ -12,45 +14,99 @@ class GithubService:
             "Authorization": f"token {self.token}" if self.token else ""
         }
         if not self.token:
-            print("WARNING: GITHUB_TOKEN is not set. API calls will be severely rate-limited or fail.")
+            print("WARNING: GITHUB_TOKEN is not set. GitHub API calls will fail.")
 
     async def get_failed_run_logs(self, repo_full_name: str, run_id: int) -> str:
         """
-        Downloads and extracts the exact string logs for a failed GitHub action run.
+        Fetches the text logs for the first failed job in a GitHub Actions run.
         """
-        # 1. Fetch the jobs for the run
         url = f"https://api.github.com/repos/{repo_full_name}/actions/runs/{run_id}/jobs"
-        
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=self.headers)
             response.raise_for_status()
             data = response.json()
-            
-            # Find the failed job
-            failed_job = next((job for job in data.get("jobs", []) if job.get("conclusion") == "failure"), None)
-            
+
+            failed_job = next(
+                (job for job in data.get("jobs", []) if job.get("conclusion") == "failure"),
+                None
+            )
             if not failed_job:
                 return "No failed jobs found in this run."
-                
+
             job_id = failed_job["id"]
-            
-            # 2. Download the logs for that specific job
             log_url = f"https://api.github.com/repos/{repo_full_name}/actions/jobs/{job_id}/logs"
             log_response = await client.get(log_url, headers=self.headers, follow_redirects=True)
             log_response.raise_for_status()
-            
             return log_response.text
 
     async def get_file_content(self, repo_full_name: str, file_path: str, ref: str = "main") -> str:
         """
-        Fetches the raw content of a specific file from the repository at a given commit/branch.
+        Fetches the raw content of a file from the repository at a given branch/commit.
         """
         url = f"https://raw.githubusercontent.com/{repo_full_name}/{ref}/{file_path}"
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"Authorization": f"token {self.token}"} if self.token else {})
+            response = await client.get(
+                url,
+                headers={"Authorization": f"token {self.token}"} if self.token else {}
+            )
             if response.status_code == 200:
                 return response.text
-            else:
-                return f"Failed to fetch file: HTTP {response.status_code}"
+            return f"ERROR: Could not fetch {file_path} — HTTP {response.status_code}"
+
+    async def create_fix_branch_and_pr(
+        self,
+        repo_full_name: str,
+        base_branch: str,
+        file_path: str,
+        new_content: str,
+        error_summary: str,
+        run_id: int
+    ) -> str:
+        """
+        Creates a new branch, commits the fixed file, and opens a Pull Request.
+        Returns the PR URL on success.
+        """
+        branch_name = f"ai-fix/run-{run_id}"
+
+        async with httpx.AsyncClient() as client:
+            # 1. Get the SHA of the base branch HEAD
+            ref_url = f"https://api.github.com/repos/{repo_full_name}/git/ref/heads/{base_branch}"
+            ref_resp = await client.get(ref_url, headers=self.headers)
+            ref_resp.raise_for_status()
+            base_sha = ref_resp.json()["object"]["sha"]
+
+            # 2. Create the new fix branch
+            branch_url = f"https://api.github.com/repos/{repo_full_name}/git/refs"
+            await client.post(branch_url, headers=self.headers, json={
+                "ref": f"refs/heads/{branch_name}",
+                "sha": base_sha
+            })
+
+            # 3. Get the current file's SHA (needed to update it via API)
+            file_url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}"
+            file_resp = await client.get(file_url, headers=self.headers, params={"ref": base_branch})
+            file_sha = file_resp.json().get("sha", "")
+
+            # 4. Commit the fixed file to the new branch
+            import base64
+            encoded_content = base64.b64encode(new_content.encode()).decode()
+            await client.put(file_url, headers=self.headers, json={
+                "message": f"fix(ai): auto-fix for run #{run_id}\n\n{error_summary}",
+                "content": encoded_content,
+                "sha": file_sha,
+                "branch": branch_name
+            })
+
+            # 5. Open a Pull Request
+            pr_url = f"https://api.github.com/repos/{repo_full_name}/pulls"
+            pr_resp = await client.post(pr_url, headers=self.headers, json={
+                "title": f"🤖 AI Fix: {error_summary[:60]}",
+                "body": f"This PR was automatically generated by the **Neoverse CI/CD Auto-Healer**.\n\n**Root Cause:** {error_summary}\n\n**Fix applied to:** `{file_path}`\n\n> Run ID: `{run_id}`",
+                "head": branch_name,
+                "base": base_branch
+            })
+            pr_data = pr_resp.json()
+            return pr_data.get("html_url", "PR creation failed")
+
 
 github_service = GithubService()

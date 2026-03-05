@@ -1,7 +1,8 @@
 import os
+import json
 from dotenv import load_dotenv
 
-# Ensure we actually find the .env file located one directory up (in backend/)
+# Ensure we find the .env file in the backend/ directory
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(dotenv_path)
 
@@ -11,60 +12,58 @@ from agent.state import AgentState
 from agent.context_builder import log_analyzer
 from agent.tools.github_service import github_service
 
-import os
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
-from agent.state import AgentState
-from agent.context_builder import log_analyzer
-from agent.tools.github_service import github_service
-
-# Initialize Groq LLM — Llama 3.3 70B is excellent at code analysis and fixing
+# Initialize Groq LLM — Llama 3.3-70B: excellent at code analysis and fixing
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
-    print("CRITICAL ERROR: GROQ_API_KEY environment variable is missing! The AI workflows will fail.")
+    print("CRITICAL ERROR: GROQ_API_KEY is missing! The AI workflows will fail.")
 
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1, groq_api_key=groq_api_key)
 
+
 async def diagnostician_node(state: AgentState):
     """
-    Node 1: Receives the raw logs, extracting the summary and the specific files 
-    that need to be downloaded from GitHub to write the fix.
+    Node 1: Receives the raw CI logs, extracts the error trace,
+    and asks the LLM to identify the root cause and which files need to be fixed.
     """
     print(f"--- [DIAGNOSTICIAN] Analyzing Logs for Run {state['run_id']} ---")
-    
-    # 1. Shrink massively long logs down to the actual error trace
+
+    # Shrink massive logs down to the actual error trace
     trimmed_logs = log_analyzer.extract_error_trace(state["raw_logs"])
-    
-    # 2. Ask the LLM to identify the error and the files involved
+
     prompt = f"""
     You are an expert CI/CD DevOps Engineer. A build pipeline just failed.
     Here is the exact error trace:
-    
+
     <error_trace>
     {trimmed_logs}
     </error_trace>
-    
+
     Your job is to:
-    1. Briefly summarize why the build failed.
-    2. Identify the exact file paths within the repository that likely need to be modified or inspected to fix this bug.
-    
-    Return your response EXTRACTLY as a JSON object with two keys:
-    "summary": "String",
-    "files": ["file1.py", "src/file2.js"]
+    1. Briefly summarize why the build failed (1-2 sentences).
+    2. Identify the exact file paths within the repository that likely need to be modified to fix this bug.
+
+    Return your response EXACTLY as a JSON object with two keys:
+    {{
+        "summary": "Short explanation of the error",
+        "files": ["path/to/file1.py", "path/to/file2.js"]
+    }}
+    Return ONLY the JSON object. No extra text.
     """
-    
+
     response = llm.invoke([HumanMessage(content=prompt)])
-    
+
     try:
-        # Very rough JSON parsing; in prod, use LangChain's StructuredOutputParser
-        json_str = response.content.strip().lstrip('```json').rstrip('```')
-        result_dict = json.loads(json_str)
-        
+        # Strip markdown code fences if the model wraps the JSON
+        json_str = response.content.strip()
+        if json_str.startswith("```"):
+            json_str = json_str.split("```")[1]
+            if json_str.startswith("json"):
+                json_str = json_str[4:]
+        result_dict = json.loads(json_str.strip())
         summary = result_dict.get("summary", "Failed to parse summary")
         files_to_fetch = result_dict.get("files", [])
-        
     except Exception as e:
-        print(f"JSON Parse error in Diagnostician: {e}")
+        print(f"  -> JSON Parse error in Diagnostician: {e}")
         summary = response.content
         files_to_fetch = []
 
@@ -79,54 +78,56 @@ async def diagnostician_node(state: AgentState):
 
 async def researcher_node(state: AgentState):
     """
-    Node 2: Takes the files identified by the diagnostician and fetches 
-    their actual raw content from GitHub APIs.
+    Node 2: Takes the files identified by the Diagnostician and fetches
+    their actual raw content from the GitHub repository.
     """
     print(f"--- [RESEARCHER] Fetching {len(state['files_to_fetch'])} files from GitHub ---")
-    
+
     file_contents = {}
     repo = state["repository"]
     commit = state["commit_sha"]
-    
+
     for file_path in state["files_to_fetch"]:
         print(f"  -> Fetching: {file_path}")
         content = await github_service.get_file_content(repo, file_path, commit)
         file_contents[file_path] = content
-        
+
     return {"file_contents": file_contents}
 
 
 async def solver_node(state: AgentState):
     """
-    Node 3: Takes the error summary and the raw files, and writes a proposed patch.
+    Node 3: Takes the error summary and raw file contents, then writes a
+    corrected version of each file to fix the bug.
     """
     print("--- [SOLVER] Drafting Code Patch ---")
-    
+
     context = ""
     for path, code in state["file_contents"].items():
-        context += f"\\n\\n--- START OF FILE: {path} ---\\n{code}\\n--- END OF FILE ---"
-        
+        context += f"\n\n--- START OF FILE: {path} ---\n{code}\n--- END OF FILE ---"
+
+    critic_feedback = state.get("critic_feedback") or "N/A"
+
     prompt = f"""
-    You are a Senior Software Engineer resolving a CI/CD failure.
-    
+    You are a Senior Software Engineer resolving a CI/CD build failure.
+
     Failure reason: {state['error_summary']}
-    
-    Here is the relevant code structure:
+
+    Here is the relevant source code:
     {context}
-    
-    If the Critic previously rejected your code, here is their feedback: 
-    {state.get('critic_feedback', 'N/A')}
-    
-    Write the updated file(s) to fix the issue. 
-    Wrap each patched file in a markdown codeblock specifically mentioning the filepath on the first line. For example:
-    
+
+    Critic's previous feedback (if any): {critic_feedback}
+
+    Write the corrected version of each file that fixes the issue.
+    Wrap each file in a markdown code block with the file path on the first line as a comment. Example:
+
     ```python
-    # filename/path.py
-    def patched_code():
+    # path/to/filename.py
+    def fixed_function():
         pass
     ```
     """
-    
+
     response = llm.invoke([HumanMessage(content=prompt)])
     print("  -> Patch drafted.")
     return {"proposed_patch": response.content}
@@ -134,33 +135,33 @@ async def solver_node(state: AgentState):
 
 async def critic_node(state: AgentState):
     """
-    Node 4: Reviews the Solver's proposed patch to ensure it actually 
-    resolves the CI failure and doesn't introduce syntax errors.
+    Node 4: Reviews the Solver's proposed patch. Returns APPROVE or
+    detailed feedback so the Solver can try again.
     """
     print("--- [CRITIC] Reviewing Solver's Patch ---")
-    
+
     prompt = f"""
-    You are a Staff Level Code Reviewer. 
-    A junior engineer has proposed a fix for a CI/CD pipeline failure.
-    
+    You are a Staff Engineer doing a code review.
+    A junior engineer proposed this fix for a CI/CD failure.
+
     Original Error: {state['error_summary']}
-    
+
     Proposed Fix:
     {state['proposed_patch']}
-    
-    Review this code. If it perfectly fixes the bug and contains zero syntax errors, 
-    reply with exactly the string "APPROVE".
-    
-    If it is wrong, hallucinated, or introduces new bugs, reply with detailed feedback 
-    on what they did wrong so they can rewrite it. Do not just say REJECT. Tell them why.
+
+    If the fix correctly resolves the error and has zero syntax issues, reply with exactly:
+    APPROVE
+
+    If it is wrong, introduces new bugs, or is incomplete, reply with specific feedback
+    explaining what is wrong so the engineer can correct it. Do NOT just say REJECT.
     """
-    
+
     response = llm.invoke([HumanMessage(content=prompt)])
     content = response.content.strip()
-    
-    if content == "APPROVE":
-         print("  -> Verdict: APPROVED")
-         return {"is_patch_approved": True, "critic_feedback": None}
+
+    if "APPROVE" in content:
+        print("  -> Verdict: APPROVED ✅")
+        return {"is_patch_approved": True, "critic_feedback": None}
     else:
-         print(f"  -> Verdict: REJECTED.\\n  -> Feedback: {content[:100]}...")
-         return {"is_patch_approved": False, "critic_feedback": content}
+        print(f"  -> Verdict: REJECTED ❌\n  -> Feedback: {content[:120]}...")
+        return {"is_patch_approved": False, "critic_feedback": content}

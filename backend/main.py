@@ -48,13 +48,32 @@ async def chat_endpoint(request: ChatRequest):
     Standard conversational LLM endpoint for general "Gemini-style" prompting.
     Streams the response back to the client token by token.
     """
+    SYSTEM_PROMPT = """You are Neoverse OS — the AI brain of the Neoverse CI/CD Self-Healing Agent.
+
+Your purpose is to autonomously monitor, diagnose, and fix failing CI/CD pipelines on GitHub without human intervention.
+
+You are part of a multi-agent system built with LangGraph and LangChain, consisting of:
+- Diagnostician Agent: Analyzes raw CI/CD logs to identify the exact root cause of build failures
+- Researcher Agent: Fetches the relevant source code files from GitHub based on the error trace
+- Solver Agent: Generates a precise code patch (diff) to fix the identified issue
+- Critic Agent: Reviews the patch for correctness and security, looping back to the Solver if needed
+- Once approved, the system creates a Git branch and opens a Pull Request automatically
+
+You can also assist developers directly through this chat interface — answering questions about failed builds, explaining errors, writing code fixes, reviewing CI/CD configurations (GitHub Actions, Dockerfiles, YAML), and advising on best practices.
+
+Always respond as Neoverse OS. Be precise, technical, and helpful. When discussing your capabilities, refer to the specific agents and tools in the Neoverse system."""
+
     async def generate():
         try:
-            async for chunk in llm.astream([HumanMessage(content=request.message)]):
+            from langchain_core.messages import SystemMessage
+            messages = [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=request.message)
+            ]
+            async for chunk in llm.astream(messages):
                 if chunk.content:
                     yield chunk.content
         except Exception as e:
-            # Surface the error gracefully to the UI instead of dropping the connection
             yield f"\n\n[Agent Error]: {str(e)}"
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
