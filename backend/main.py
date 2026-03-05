@@ -13,7 +13,7 @@ load_dotenv(dotenv_path)
 
 from agent.graph import app as agent_workflow
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
 app = FastAPI(
@@ -25,14 +25,12 @@ app = FastAPI(
 # Setup basic Jinja2 template rendering for the frontend
 templates = Jinja2Templates(directory="templates")
 
-# Shared basic LLM for chat
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if not gemini_api_key:
-    print("CRITICAL ERROR: GEMINI_API_KEY environment variable is missing! The Chat API will fail.")
-else:
-    os.environ["GOOGLE_API_KEY"] = gemini_api_key
+# Shared LLM for chat — Groq (Llama 3.3 70B) is free-tier with high daily limits
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    print("CRITICAL ERROR: GROQ_API_KEY environment variable is missing!")
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.7, api_key=gemini_api_key)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.7, groq_api_key=groq_api_key)
 
 # Basic model for standard Webhook responses
 class WebhookResponse(BaseModel):
@@ -104,13 +102,17 @@ async def github_webhook(request: Request):
     if conclusion != "failure":
         return WebhookResponse(status="ignored", message=f"Workflow conclusion is {conclusion}, ignoring.")
         
+    # Extract fields from the payload
+    repo_full_name = payload.get("repository", {}).get("full_name", "unknown/repo")
+    run_id = workflow_run.get("id", 0)
+    commit_sha = workflow_run.get("head_sha", "unknown")
+
     try:
         # 1. Fetch the raw failing logs (using our github service)
         from agent.tools.github_service import github_service
         raw_logs = await github_service.get_failed_run_logs(repo_full_name, run_id)
         
         # 2. Kick off the LangGraph Agent workflow asynchronously!
-        # Define the initial state the graph starts with
         initial_state = {
             "repository": repo_full_name,
             "run_id": run_id,

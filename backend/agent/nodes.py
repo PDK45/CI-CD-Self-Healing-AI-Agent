@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(dotenv_path)
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from agent.state import AgentState
 from agent.context_builder import log_analyzer
@@ -18,15 +18,12 @@ from agent.state import AgentState
 from agent.context_builder import log_analyzer
 from agent.tools.github_service import github_service
 
-# Initialize the real LLM
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if not gemini_api_key:
-    print("CRITICAL ERROR: GEMINI_API_KEY environment variable is missing! The AI workflows will fail.")
-else:
-    os.environ["GOOGLE_API_KEY"] = gemini_api_key
-    
-# Using gemini-1.5-flash as it is extremely fast, has a massive context window for logs, and offers a generous free tier
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.1, api_key=gemini_api_key)
+# Initialize Groq LLM — Llama 3.3 70B is excellent at code analysis and fixing
+groq_api_key = os.getenv("GROQ_API_KEY")
+if not groq_api_key:
+    print("CRITICAL ERROR: GROQ_API_KEY environment variable is missing! The AI workflows will fail.")
+
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1, groq_api_key=groq_api_key)
 
 async def diagnostician_node(state: AgentState):
     """
