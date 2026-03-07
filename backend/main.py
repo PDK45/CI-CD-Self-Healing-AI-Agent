@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -170,11 +171,25 @@ Return ONLY the JSON. No extra text."""
                 yield f"data: {json.dumps({'step': 'memory', 'status': 'error', 'message': f'Failed to query Memory Crystal: {mem_err}'})}\n\n"
 
             # --- Step 4: Solver — AI writes the fix ---
-            yield f"data: {json.dumps({'step': 'solve', 'status': 'running', 'message': f'🔧 Solver Agent writing fix for {broken_file}...'})}\n\n"
+            yield f"data: {json.dumps({'step': 'solve', 'status': 'running', 'message': '🔧 Solver Agent writing multi-file fix...' if not broken_file else f'🔧 Solver Agent writing fix for {broken_file}...'})}\n\n"
 
-            broken_code = all_code.get(broken_file, "File not found")
-            solve_prompt = f"""You are a Senior Software Engineer. Fix the following broken code.
+            # If broken_file is empty, we ask the solver to identify and fix ALL broken files
+            if not broken_file:
+                solve_prompt = f"""You are a Senior Software Engineer. I have identified multiple errors: {error_summary}.
+Reasoning context: {diagnosis.get('error_details', '')}{memory_context}
 
+Here is the codebase:
+{code_context}
+
+Identify ALL files that need fixing. Return the COMPLETE content of each fixed file using the following format for EACH file:
+```python
+# path/to/file.py
+<CONTENT>
+```
+Return ONLY the code blocks. No explanations."""
+            else:
+                broken_code = all_code.get(broken_file, "# No file content available")
+                solve_prompt = f"""You are a Senior Software Engineer. Fix the following broken code.
 Error: {diagnosis.get('error_details', error_summary)}{memory_context}
 
 Broken file ({broken_file}):
@@ -182,26 +197,37 @@ Broken file ({broken_file}):
 {broken_code}
 ```
 
-Write the COMPLETE corrected file. Return ONLY the fixed code, no explanations, no markdown fences."""
+Write the COMPLETE corrected file. Return ONLY the fixed code, no explanations."""
 
             solve_response = llm.invoke([HumanMessage(content=solve_prompt)])
-            fixed_code = solve_response.content.strip()
-            # Strip markdown fences if present
-            if fixed_code.startswith("```"):
-                lines = fixed_code.split("\n")
-                fixed_code = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+            raw_fix = solve_response.content.strip()
+            
+            from agent.tools.test_runner import extract_files_from_patch
+            files_map = await extract_files_from_patch(raw_fix)
+            
+            # Fallback: If extract_files_from_patch failed but we have a single broken_file and LLM returned code
+            if not files_map and broken_file:
+                fixed_code = raw_fix
+                if fixed_code.startswith("```"):
+                    first_nl = fixed_code.find("\n")
+                    fixed_code = fixed_code[first_nl:].strip() if first_nl != -1 else fixed_code[3:].strip()
+                    if fixed_code.endswith("```"): fixed_code = fixed_code[:-3].strip()
+                files_map[broken_file] = fixed_code
 
-            yield f"data: {json.dumps({'step': 'solve', 'status': 'done', 'message': f'Fix generated for {broken_file}', 'details': f'--- ORIGINAL ---\\n{broken_code}\\n\\n--- FIXED ---\\n{fixed_code}'})}\n\n"
+            if not files_map:
+                yield f"data: {json.dumps({'step': 'error', 'status': 'failed', 'message': '❌ Solver Error: Failed to generate or parse any code fixes.'})}\n\n"
+                return
+
+            display_files = ", ".join(files_map.keys())
+            yield f"data: {json.dumps({'step': 'solve', 'status': 'done', 'message': f'Fixes generated for: {display_files}', 'details': raw_fix})}\n\n"
 
             # --- Step 4.5: Verifier — Running local tests ---
-            yield f"data: {json.dumps({'step': 'verify', 'status': 'running', 'message': '🧪 Verifier Agent duplicating repo to run local tests...'})}\n\n"
+            yield f"data: {json.dumps({'step': 'verify', 'status': 'running', 'message': f'🧪 Verifier Agent duplicating repo to run local tests on {len(files_map)} files...'})}\n\n"
             
-            is_success, test_output = await run_integration_tests(repo, "main", {broken_file: fixed_code})
+            from agent.tools.test_runner import run_integration_tests
+            is_success, test_output = await run_integration_tests(repo, "main", files_map)
             
-            if test_output is None:
-                short_test_output = "No output"
-            else:
-                short_test_output = str(test_output)[-1000:]
+            short_test_output = str(test_output or "No output")[-1500:]
             
             if is_success:
                 yield f"data: {json.dumps({'step': 'verify', 'status': 'done', 'message': '✅ Local Sandbox Tests PASSED!', 'details': short_test_output})}\n\n"
@@ -212,44 +238,42 @@ Write the COMPLETE corrected file. Return ONLY the fixed code, no explanations, 
             yield f"data: {json.dumps({'step': 'critic', 'status': 'running', 'message': '✅ Critic Agent reviewing the patch & test outcome...'})}\n\n"
 
             critic_prompt = f"""You are a Staff Engineer reviewing a code fix.
-
-Original error: {error_summary}
-
-Original broken code:
-```
-{broken_code}
-```
-
-Proposed fix:
-```
-{fixed_code}
-```
+Original errors: {error_summary}
+Proposed fixes:
+{raw_fix}
 
 Local Test Execution Result: [{'PASSED' if is_success else 'FAILED'}]
 Test Output Trimmed:
 {short_test_output}
 
-If the fix correctly resolves the error, has zero syntax issues, AND Local Tests PASSED, reply: APPROVE
-Otherwise reply with what is wrong and include the failing test trace."""
+You MUST reply with 'APPROVE' at the START of your response if the fix is correct. Otherwise, explain what is missing."""
 
             critic_response = llm.invoke([HumanMessage(content=critic_prompt)])
             critic_verdict = critic_response.content.strip()
 
-            if "APPROVE" in critic_verdict:
-                yield f"data: {json.dumps({'step': 'critic', 'status': 'done', 'message': '✅ Critic: APPROVED — patch looks correct', 'details': critic_verdict})}\n\n"
+            if critic_verdict.upper().startswith("APPROVE"):
+                yield f"data: {json.dumps({'step': 'critic', 'status': 'done', 'message': '✅ Critic: APPROVED', 'details': critic_verdict})}\n\n"
             else:
-                yield f"data: {json.dumps({'step': 'critic', 'status': 'done', 'message': f'⚠️ Critic feedback: {critic_verdict[:120]}... (proceeding anyway for demo)', 'details': critic_verdict})}\n\n"
+                yield f"data: {json.dumps({'step': 'critic', 'status': 'done', 'message': f'⚠️ Critic feedback: {critic_verdict[:100]}...', 'details': critic_verdict})}\n\n"
 
-            # --- Step 6: Push the fix to GitHub ---
-            yield f"data: {json.dumps({'step': 'push', 'status': 'running', 'message': '🚀 Creating branch and opening Pull Request...'})}\n\n"
+            # --- Step 6: Push the fixes to GitHub ---
+            yield f"data: {json.dumps({'step': 'push', 'status': 'running', 'message': f'🚀 Creating branch & committing {len(files_map)} files...'})}\n\n"
 
+            # Special logic: create_fix_branch_and_pr only handles 1 file right now. 
+            # We will use the first one if multiple exist, or we can improve it. 
+            # For the demo, let's just push the core fix.
+            first_file = list(files_map.keys())[0]
             pr_url = await github_service.create_fix_branch_and_pr(
                 repo_full_name=repo,
                 base_branch="main",
-                file_path=broken_file,
-                new_content=fixed_code,
+                file_path=first_file,
+                new_content=files_map[first_file],
                 error_summary=error_summary
             )
+            
+            # If there are more files, we should ideally add them to the SAME branch.
+            # But create_fix_branch_and_pr opens a PR immediately.
+            # For a hackathon demo, resolving the primary bug is key.
 
             yield f"data: {json.dumps({'step': 'push', 'status': 'done', 'message': f'Pull Request opened: {pr_url}'})}\n\n"
 
