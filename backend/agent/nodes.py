@@ -108,11 +108,25 @@ async def solver_node(state: AgentState):
         context += f"\n\n--- START OF FILE: {path} ---\n{code}\n--- END OF FILE ---"
 
     critic_feedback = state.get("critic_feedback") or "N/A"
+    error_summary = state['error_summary']
+
+    # --- Query Memory Crystal for past fixes ---
+    try:
+        from agent.tools.memory_crystal import query_memory_for_fix
+        past_fixes = query_memory_for_fix(error_summary, n_results=1)
+        memory_context = ""
+        if past_fixes:
+            match = past_fixes[0]
+            print(f"  -> [MEMORY] Found highly relevant past fix from {match['repo']}!")
+            memory_context = f"\n\nCRITICAL CONTEXT: I have seen a very similar error in the past. Here is how I successfully fixed it before. Try to adapt this past fix to the current code:\\nPast Error: {match['past_error']}\\nPast Fix Applied:\\n{match['fix_patch']}"
+    except Exception as e:
+        print(f"  -> [MEMORY] Warning: Could not query Memory Crystal: {e}")
+        memory_context = ""
 
     prompt = f"""
     You are a Senior Software Engineer resolving a CI/CD build failure.
 
-    Failure reason: {state['error_summary']}
+    Failure reason: {error_summary}{memory_context}
 
     Here is the relevant source or configuration code:
     {context}
@@ -225,9 +239,22 @@ async def deployer_node(state: AgentState):
             else:
                 status += "Failed to trigger deployment webhook."
                 print("  -> Webhook failed to return 200.")
-        else:
             status += "No DEPLOYMENT_WEBHOOK configured."
             print("  -> Skipped deploy webhook (not in .env).")
+            
+        # --- Save to Memory Crystal ---
+        try:
+            from agent.tools.memory_crystal import save_fix_to_memory
+            repo = state.get("repository", "unknown/repo")
+            error_details = state.get("error_summary", "")
+            context_files = state.get("file_contents", {})
+            broken_file = list(context_files.keys())[0] if context_files else "unknown_file.py"
+            fixed_code = state.get("proposed_patch", "")
+            if fixed_code and error_details:
+                save_fix_to_memory(repo, error_details, broken_file, fixed_code)
+                print("  -> [MEMORY] Fix successfully etched into the Memory Crystal!")
+        except Exception as e:
+            print(f"  -> [MEMORY] Warning: Failed to write to Memory Crystal: {e}")
             
         return {"deployment_status": status}
     else:

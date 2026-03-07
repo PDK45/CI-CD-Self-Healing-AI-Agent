@@ -63,12 +63,11 @@
                     class="text-blue-400 font-light">Auto-Healer</span></h1>
         </div>
         <div class="flex items-center gap-4">
-            <span class="flex items-center gap-2 text-sm text-slate-300">
+            <button onclick="promptGitHubPAT()" id="github-connect-btn" class="bg-slate-700 hover:bg-slate-600 transition-colors px-4 py-2 rounded-lg text-sm font-medium border border-slate-600 flex items-center gap-2"><i class="fa-brands fa-github text-white"></i> Connect GitHub</button>
+            <span class="flex items-center gap-2 text-sm text-slate-300 ml-2">
                 <div class="w-2.5 h-2.5 bg-green-500 rounded-full pulse-green"></div>
                 Agent Online
             </span>
-            <button
-                class="bg-blue-600 hover:bg-blue-500 transition-colors px-4 py-2 rounded-lg text-sm font-medium">Settings</button>
         </div>
     </nav>
 
@@ -78,43 +77,18 @@
         <!-- Left Column: Pipeline Monitoring Sandbox -->
         <section class="w-1/3 flex flex-col gap-6">
             <!-- Active Monitors -->
-            <div class="glass-panel rounded-xl p-5 flex flex-col gap-4 flex-1">
-                <h2 class="text-lg font-semibold border-b border-slate-700 pb-2"><i
-                        class="fa-brands fa-github mr-2"></i>Monitored Repositories</h2>
+            <div class="glass-panel rounded-xl p-5 flex flex-col gap-4 flex-1 h-[50vh] overflow-y-auto">
+                <h2 class="text-lg font-semibold border-b border-slate-700 pb-2 flex justify-between items-center">
+                    <span><i class="fa-brands fa-github mr-2"></i>Monitored Repos</span>
+                    <span class="text-xs font-normal text-slate-400" id="repo-count">Syncing...</span>
+                </h2>
 
-                <!-- Mock Repo Item -->
-                <div
-                    class="bg-slate-800/50 p-3 rounded-lg border border-slate-700 hover:border-blue-400 transition cursor-pointer">
-                    <div class="flex justify-between items-center mb-2">
-                        <span class="font-medium text-blue-200">user/Opalite-App</span>
-                        <span
-                            class="bg-red-500/20 text-red-400 text-xs px-2 py-1 rounded border border-red-500/30 font-mono">Failing</span>
+                <div id="repo-list-container" class="flex flex-col gap-3">
+                    <!-- Default State -->
+                    <div class="text-center p-4 border border-dashed border-slate-600 rounded-lg opacity-60">
+                        <i class="fa-solid fa-cloud-arrow-down text-2xl mb-2 text-slate-400"></i>
+                        <p class="text-xs text-slate-400">Connect your GitHub account to sync repositories.</p>
                     </div>
-                    <p class="text-xs text-slate-400">Commit <code>a1b2c3d</code> • 2 mins ago</p>
-                    <div class="mt-3 flex flex-col gap-2">
-                        <button onclick="triggerMockWebhook('user/Opalite-App')"
-                            class="w-full bg-slate-700 hover:bg-emerald-600 transition text-xs py-1.5 rounded text-white flex justify-center items-center gap-2">
-                            <i class="fa-solid fa-play"></i> Run Webhook Test
-                        </button>
-                        <button onclick="triggerHeal('PDK45/neoverse-test-pipeline')"
-                            class="w-full bg-blue-600 hover:bg-blue-500 transition text-xs py-1.5 rounded text-white flex justify-center items-center gap-2 shadow-lg shadow-blue-900/50">
-                            <i class="fa-solid fa-wand-magic-sparkles"></i> Analyze & Heal Repo
-                        </button>
-                        <button onclick="triggerRollback('PDK45/neoverse-test-pipeline')"
-                            class="w-full bg-orange-600 hover:bg-orange-500 transition text-xs py-1.5 rounded text-white flex justify-center items-center gap-2 shadow-lg shadow-orange-900/50 mt-1">
-                            <i class="fa-solid fa-backward-fast"></i> Trigger Emergency Rollback
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Mock Repo Item -->
-                <div class="bg-slate-800/50 p-3 rounded-lg border border-slate-700 opacity-60">
-                    <div class="flex justify-between items-center mb-2">
-                        <span class="font-medium text-blue-200">user/auth-service</span>
-                        <span
-                            class="bg-green-500/20 text-green-400 text-xs px-2 py-1 rounded border border-green-500/30 font-mono">Passing</span>
-                    </div>
-                    <p class="text-xs text-slate-400">Commit <code>f9e8d7c</code> • 1 hour ago</p>
                 </div>
             </div>
 
@@ -184,6 +158,7 @@
         const stepIcons = {
             'scan': 'fa-magnifying-glass',
             'fetch': 'fa-download',
+            'memory': 'fa-brain',
             'diagnose': 'fa-stethoscope',
             'solve': 'fa-code',
             'verify': 'fa-flask-vial',
@@ -283,6 +258,98 @@
             }
         });
 
+        // GitHub Multi-Repo Auth Flow
+        async function promptGitHubPAT() {
+            const currentToken = localStorage.getItem('github_pat');
+            const token = prompt("Secure Auth: Enter your GitHub Personal Access Token (PAT) to analyze and fetch your repositories across the dashboard.", currentToken || "");
+            if (!token) return;
+            
+            localStorage.setItem('github_pat', token);
+            const btn = document.getElementById('github-connect-btn');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Connecting...';
+            
+            try {
+                const response = await fetch('/api/github/repos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token })
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    btn.innerHTML = '<i class="fa-brands fa-github text-green-400"></i> Connected';
+                    btn.classList.replace('bg-slate-700', 'bg-green-900/40');
+                    btn.classList.add('border-green-600/50', 'text-green-100');
+                    renderRepositories(data.repos);
+                } else {
+                    alert("Failed to connect: " + data.message);
+                    btn.innerHTML = '<i class="fa-brands fa-github text-white"></i> Connect GitHub';
+                }
+            } catch(e) {
+                alert("Error connecting to GitHub: " + e.message);
+                btn.innerHTML = '<i class="fa-brands fa-github text-white"></i> Connect GitHub';
+            }
+        }
+        
+        function renderRepositories(repos) {
+            const container = document.getElementById('repo-list-container');
+            document.getElementById('repo-count').textContent = repos.length + " Repos";
+            container.innerHTML = '';
+            
+            repos.forEach(repo => {
+                const date = new Date(repo.updated_at).toLocaleDateString();
+                const visibility = repo.private ? '<i class="fa-solid fa-lock text-slate-500 text-[10px] ml-1" title="Private Repo"></i>' : '';
+                
+                const repoDiv = document.createElement('div');
+                repoDiv.className = "bg-slate-800/50 p-3 rounded-lg border border-slate-700 hover:border-blue-500 hover:bg-slate-800 transition cursor-pointer group shadow-sm";
+                repoDiv.innerHTML = `
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="font-medium text-blue-200 text-sm truncate w-3/4">${repo.name} ${visibility}</span>
+                        <span class="bg-blue-900/30 text-blue-400 text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 font-mono tracking-wide">Syncing</span>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mb-2">Last active: ${date}</p>
+                    <div class="mt-2 flex-col gap-2 hidden group-hover:flex">
+                        <button onclick="triggerMockWebhook('${repo.name}')"
+                            class="w-full bg-slate-700 hover:bg-emerald-600 transition text-[10px] py-1.5 rounded text-white flex justify-center items-center gap-2">
+                            <i class="fa-solid fa-play"></i> Mock Failed CI Webhook
+                        </button>
+                        <button onclick="triggerHeal('${repo.name}')"
+                            class="w-full bg-blue-600 hover:bg-blue-500 transition text-[10px] py-1.5 rounded text-white flex justify-center items-center gap-2 shadow-lg shadow-blue-900/50 font-medium">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> AI Health Check & Heal
+                        </button>
+                        <button onclick="triggerRollback('${repo.name}')"
+                            class="w-full bg-orange-600 hover:bg-orange-500 transition text-[10px] py-1.5 rounded text-white flex justify-center items-center gap-2 shadow-lg shadow-orange-900/50 font-medium">
+                            <i class="fa-solid fa-backward-fast"></i> Emergency Rollback
+                        </button>
+                    </div>
+                `;
+                container.appendChild(repoDiv);
+            });
+            
+            appendMessage('AI', 'GitHub Federation active! Safely fetched <b class="text-blue-300">' + repos.length + '</b> repositories via token. Hover over any repository on the left to inject an AI Healing agent instance or trigger rollbacks across your infrastructure.', true);
+        }
+
+        // Check if token exists on load
+        window.addEventListener('load', () => {
+            const token = localStorage.getItem('github_pat');
+            if (token) {
+                // Silently attempt reconnect
+                fetch('/api/github/repos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: token })
+                }).then(r => r.json()).then(data => {
+                    if (data.success) {
+                        const btn = document.getElementById('github-connect-btn');
+                        btn.innerHTML = '<i class="fa-brands fa-github text-green-400"></i> Connected';
+                        btn.classList.replace('bg-slate-700', 'bg-green-900/40');
+                        btn.classList.add('border-green-600/50', 'text-green-100');
+                        renderRepositories(data.repos);
+                    }
+                }).catch(e => console.log("Silent auth failed", e));
+            }
+        });
+
         // Mock Webhook (Original)
         async function triggerMockWebhook(repo) {
             appendMessage('User', `SYSTEM COMMAND: Initiating mock GitHub Webhook for failed action on repository '${repo}'`);
@@ -355,6 +422,7 @@
                                 if (data.status === "done") statusColor = "text-green-400";
                                 if (data.status === "error" || data.status === "failed") statusColor = "text-red-400";
                                 if (data.status === "clean" || data.status === "success") statusColor = "text-emerald-400 font-bold";
+                                if (data.step === "memory") statusColor = "text-purple-400 shadow-purple-900";
 
                                 let msg = data.message;
                                 if (data.step === 'diagnose' && msg.startsWith('[')) {

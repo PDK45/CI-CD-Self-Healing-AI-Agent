@@ -16,6 +16,7 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage
 from agent.tools.github_service import github_service
 from agent.tools.test_runner import run_integration_tests
+from agent.tools.memory_crystal import save_fix_to_memory, query_memory_for_fix
 
 app = FastAPI(title="Opalite CI/CD Auto-Healer", version="2.0.0")
 templates = Jinja2Templates(directory="templates")
@@ -33,6 +34,25 @@ class ChatRequest(BaseModel):
 class HealRequest(BaseModel):
     repo: str  # e.g. "PDK45/neoverse-test-pipeline"
 
+class AuthRequest(BaseModel):
+    token: str
+
+# --- GitHub Auth & Multi-Repo Endpoint ---
+@app.post("/api/github/repos")
+async def get_github_repos(req: AuthRequest):
+    """Fetches all repositories accessible by the given GitHub token."""
+    url = "https://api.github.com/user/repos"
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"token {req.token}"
+    }
+    # Pagination support for up to 100 repos
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=headers, params={"per_page": 100, "sort": "updated"})
+        if r.status_code == 200:
+            repos = r.json()
+            return {"success": True, "repos": [{"name": repo["full_name"], "private": repo["private"], "updated_at": repo["updated_at"]} for repo in repos]}
+        return {"success": False, "message": f"GitHub API Error: {r.status_code} - {r.text}"}
 
 # --- Chat Endpoint ---
 SYSTEM_PROMPT = """You are Opalite OS — the AI brain of the Opalite CI/CD Self-Healing Agent.
@@ -125,13 +145,37 @@ Return ONLY the JSON. No extra text."""
             broken_file = diagnosis.get("broken_file", "")
             error_summary = diagnosis.get("summary", "Unknown error")
 
+            # --- Step 3.5: Memory Crystal (RAG) — AI searches past errors ---
+            yield f"data: {json.dumps({'step': 'memory', 'status': 'running', 'message': f'🧠 Memory Crystal searching for past fixes to [{diag_category}]...'})}\n\n"
+            
+            try:
+                past_fixes = query_memory_for_fix(error_summary, n_results=1)
+                memory_context = ""
+                if past_fixes:
+                    match = past_fixes[0]
+                    repo_name = match.get("repo", "unknown")
+                    past_err = match.get("past_error", "")
+                    past_fix = match.get("fix_patch", "")
+                    
+                    msg = f"✨ Found similar past error from repo: {repo_name}"
+                    details = f"Past Error: {past_err}\nPast Fix Applied:\n{past_fix}"
+                    
+                    yield f"data: {json.dumps({'step': 'memory', 'status': 'success', 'message': msg, 'details': details})}\n\n"
+                    
+                    memory_context = f"\n\nCRITICAL CONTEXT: I have seen a very similar error in the past. Here is how I successfully fixed it before. Try to adapt this past fix to the current code:\nPast Error: {past_err}\nPast Fix Applied:\n{past_fix}"
+                else:
+                    yield f"data: {json.dumps({'step': 'memory', 'status': 'done', 'message': f'No matching past fixes found. Reasoning from scratch.'})}\n\n"
+            except Exception as mem_err:
+                memory_context = ""
+                yield f"data: {json.dumps({'step': 'memory', 'status': 'error', 'message': f'Failed to query Memory Crystal: {mem_err}'})}\n\n"
+
             # --- Step 4: Solver — AI writes the fix ---
             yield f"data: {json.dumps({'step': 'solve', 'status': 'running', 'message': f'🔧 Solver Agent writing fix for {broken_file}...'})}\n\n"
 
             broken_code = all_code.get(broken_file, "File not found")
             solve_prompt = f"""You are a Senior Software Engineer. Fix the following broken code.
 
-Error: {diagnosis.get('error_details', error_summary)}
+Error: {diagnosis.get('error_details', error_summary)}{memory_context}
 
 Broken file ({broken_file}):
 ```
@@ -223,12 +267,26 @@ Otherwise reply with what is wrong and include the failing test trace."""
                         if deployed:
                             status_text += "Deployment webhook triggered successfully!"
                             yield f"data: {json.dumps({'step': 'deploy', 'status': 'done', 'message': '✅ CD Success: ' + status_text})}\n\n"
+                            
+                            # Step 7.5: Save to Memory Crystal
+                            try:
+                                save_fix_to_memory(repo, error_summary, broken_file, fixed_code)
+                                yield f"data: {json.dumps({'step': 'memory', 'status': 'success', 'message': '💎 Fix successfully etched into the Memory Crystal!'})}\n\n"
+                            except Exception as mem_err:
+                                yield f"data: {json.dumps({'step': 'memory', 'status': 'error', 'message': f'Could not save to Memory Crystal: {mem_err}'})}\n\n"
                         else:
                             status_text += "Failed to trigger deployment webhook."
                             yield f"data: {json.dumps({'step': 'deploy', 'status': 'error', 'message': '⚠️ CD Warning: ' + status_text})}\n\n"
                     else:
                         status_text += "No DEPLOYMENT_WEBHOOK configured."
                         yield f"data: {json.dumps({'step': 'deploy', 'status': 'done', 'message': '✅ CD Success: ' + status_text})}\n\n"
+                        
+                        # Save to Memory Crystal even if no webhook
+                        try:
+                            save_fix_to_memory(repo, error_summary, broken_file, fixed_code)
+                            yield f"data: {json.dumps({'step': 'memory', 'status': 'success', 'message': '💎 Fix successfully etched into the Memory Crystal!'})}\n\n"
+                        except Exception as mem_err:
+                            yield f"data: {json.dumps({'step': 'memory', 'status': 'error', 'message': f'Could not save to Memory Crystal: {mem_err}'})}\n\n"
                 else:
                     yield f"data: {json.dumps({'step': 'deploy', 'status': 'error', 'message': '⚠️ CD Warning: Failed to auto-merge PR.'})}\n\n"
 
