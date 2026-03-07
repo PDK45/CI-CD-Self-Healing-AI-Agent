@@ -1,42 +1,32 @@
-# 🤖 Opalite — CI/CD Self-Healing AI Agent
+# 🤖 Opalite OS — Autonomous CI/CD Self-Healing Agent
 
-An AI-powered SaaS platform that autonomously detects, diagnoses, and fixes failing CI/CD pipelines. When a GitHub Actions build fails, the system intercepts the webhook, analyzes logs using a multi-agent AI debate loop, generates a code patch, and opens a Pull Request — all without human intervention.
+An AI-powered SaaS platform that doesn't just notify you about bugs—it **heals** them. Opalite OS autonomously detects, diagnoses, and fixes failing CI/CD pipelines across multiple repositories. It features a cross-repository **Memory Crystal (RAG)** to learn from past fixes, **Multi-Repo Federation** via GitHub Auth, and **Emergency Rollbacks** to preserve production uptime.
 
-> **AI Model:** Groq · Llama 3.3-70B · Free Tier · ~14,400 requests/day
-
----
-
-## 🎯 How It Works
-
-```
-GitHub Webhook (failure detected)
-        ↓
-  Diagnostician  →  Reads CI logs, identifies root cause
-        ↓
-   Researcher    →  Fetches the failing source files via GitHub API
-        ↓
-    Solver       →  Generates a code patch (diff) to fix the issue
-        ↓
-    Critic       →  Reviews patch for correctness & security
-        ↓
-  [APPROVED] ──→  Creates branch → Opens Pull Request on GitHub
-  [REJECTED]  ──→  Loops back to Solver (max 3 iterations)
-```
+> **AI Engine:** Groq · Llama 3.3-70B · Ultra-Low Latency
 
 ---
 
-## ✅ Current Status (MVP Complete)
+## 🎯 The Autonomous Healing Workflow
+
+1.  **Detection:** A GitHub Webhook signals a failing build.
+2.  **Memory Crystal (RAG):** The agent cross-references the error against its codebase-wide memory (ChromaDB-lite) to retrieve similar past fixes.
+3.  **Diagnosis:** The *Diagnostician* analyzes truncated logs to find the root cause (Syntax, IaC, or Logic).
+4.  **Sandbox Solve:** The *Solver* drafts a repair, which the *Verifier* tests in a secure sandbox.
+5.  **Deployment:** Upon approval, the agent creates a branch, opens a PR, auto-merges, and triggers the deployment.
+6.  **Fail-Safe:** If the live server crashes post-deploy, the **Emergency Rollback** instants reverts the Git tree to its last stable state.
+
+---
+
+## ✅ Project Status (Production Ready)
 
 | Phase | Status |
 |---|---|
-| System Architecture & Design | ✅ Complete |
-| FastAPI Backend & GitHub Webhook Engine | ✅ Complete |
-| LangGraph Multi-Agent Orchestration | ✅ Complete |
-| Conversational Chat API (`/chat`) | ✅ Complete |
-| SaaS Dashboard (dark-mode UI) | ✅ Complete |
-| End-to-End Test with Real Repo | 🔲 Next |
-| Sandbox Testing (Docker) | 🔲 Upcoming |
-| Production Deployment | 🔲 Upcoming |
+| LangGraph Multi-Agent State Machine | ✅ Complete |
+| RAG Memory Crystal (Cross-Repo Learning) | ✅ Complete |
+| Multi-Repo GitHub Auth & Federation | ✅ Complete |
+| Emergency Git Rollbacks (Zero Downtime) | ✅ Complete |
+| Sandbox Verification & Integration Testing | ✅ Complete |
+| SaaS Dashboard (Glassmorphic UI) | ✅ Complete |
 
 ---
 
