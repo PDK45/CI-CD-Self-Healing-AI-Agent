@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agent.state import AgentState
 from agent.context_builder import log_analyzer
 from agent.tools.github_service import github_service
+from agent.tools.test_runner import run_integration_tests, extract_files_from_patch
 
 # Initialize Groq LLM — Llama 3.3-70B: excellent at code analysis and fixing
 groq_api_key = os.getenv("GROQ_API_KEY")
@@ -133,34 +134,65 @@ async def solver_node(state: AgentState):
     return {"proposed_patch": response.content}
 
 
+async def verifier_node(state: AgentState):
+    """
+    Node 3.5: Executes the Solver's proposed patch locally in a sandbox
+    and runs the test suite to verify if the fix actually works.
+    """
+    print("--- [VERIFIER] Running Local Test Sandbox ---")
+
+    if not state.get("proposed_patch"):
+        return {"test_results": "Error: No patch was proposed.", "is_test_passed": False}
+
+    files = await extract_files_from_patch(state["proposed_patch"])
+    
+    is_success, output = await run_integration_tests(
+        repo=state["repository"],
+        commit_sha=state["commit_sha"],
+        files_to_write=files
+    )
+    
+    return {
+        "is_test_passed": is_success,
+        "test_results": output
+    }
+
 async def critic_node(state: AgentState):
     """
-    Node 4: Reviews the Solver's proposed patch. Returns APPROVE or
-    detailed feedback so the Solver can try again.
+    Node 4: Reviews the Solver's proposed patch AND the Verifier's 
+    local test execution results. Returns APPROVE or detailed feedback.
     """
-    print("--- [CRITIC] Reviewing Solver's Patch ---")
+    print("--- [CRITIC] Reviewing Solver's Patch & Test Results ---")
 
+    test_status = "PASSED" if state.get("is_test_passed") else "FAILED"
+    
     prompt = f"""
     You are a Staff Engineer doing a code review.
-    A junior engineer proposed this fix for a CI/CD failure.
+    A junior engineer proposed a fix for a CI/CD failure.
+    We just ran the fix LOCALLY against the unit tests.
 
     Original Error: {state['error_summary']}
 
     Proposed Fix:
     {state['proposed_patch']}
 
-    If the fix correctly resolves the error and has zero syntax issues, reply with exactly:
+    Local Test Execution Result: [{test_status}]
+    Test Output Log:
+    {state.get('test_results', 'No test results run')}
+
+    If the fix correctly resolves the error, has zero syntax issues, AND the Local Tests PASSED, reply with exactly:
     APPROVE
 
-    If it is wrong, introduces new bugs, or is incomplete, reply with specific feedback
-    explaining what is wrong so the engineer can correct it. Do NOT just say REJECT.
+    If it is wrong, introduces new bugs, or if the LOCAL TESTS FAILED, reply with specific feedback
+    explaining what is wrong so the engineer can correct it. Include the failing test trace in your feedback.
+    Do NOT just say REJECT.
     """
 
     response = llm.invoke([HumanMessage(content=prompt)])
     content = response.content.strip()
 
     if "APPROVE" in content:
-        print("  -> Verdict: APPROVED ✅")
+        print("  -> Verdict: APPROVED ✅ (Tests Passed & Code Clean)")
         return {"is_patch_approved": True, "critic_feedback": None}
     else:
         print(f"  -> Verdict: REJECTED ❌\n  -> Feedback: {content[:120]}...")

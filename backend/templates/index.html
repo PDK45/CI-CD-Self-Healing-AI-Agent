@@ -96,7 +96,7 @@
                             class="w-full bg-slate-700 hover:bg-emerald-600 transition text-xs py-1.5 rounded text-white flex justify-center items-center gap-2">
                             <i class="fa-solid fa-play"></i> Run Webhook Test
                         </button>
-                        <button onclick="triggerHeal('PDK45/opalite-test-pipeline')"
+                        <button onclick="triggerHeal('PDK45/neoverse-test-pipeline')"
                             class="w-full bg-blue-600 hover:bg-blue-500 transition text-xs py-1.5 rounded text-white flex justify-center items-center gap-2 shadow-lg shadow-blue-900/50">
                             <i class="fa-solid fa-wand-magic-sparkles"></i> Analyze & Heal Repo
                         </button>
@@ -119,10 +119,11 @@
                 <h2 class="text-lg font-semibold border-b border-slate-700 pb-2 mb-3"><i
                         class="fa-solid fa-network-wired mr-2"></i>LangGraph State</h2>
                 <div class="flex-1 flex flex-col justify-center items-center gap-3 text-slate-400">
-                    <i class="fa-solid fa-diagram-project text-4xl mb-2 opacity-50"></i>
-                    <p class="text-sm text-center">Awaiting Webhook Trigger...</p>
-                    <p class="text-xs text-center px-4">Watch the AI nodes (Diagnostician -> Solver -> Critic) execute
-                        in real-time here.</p>
+                    <i id="langgraph-icon"
+                        class="fa-solid fa-diagram-project text-4xl mb-2 opacity-50 transition-colors duration-300"></i>
+                    <p id="langgraph-status" class="text-sm text-center font-bold tracking-wider">AWAITING TRIGGER</p>
+                    <p id="langgraph-desc" class="text-xs text-center px-4">Watch the AI nodes execute in real-time
+                        here.</p>
                 </div>
             </div>
         </section>
@@ -170,6 +171,41 @@
         const chatForm = document.getElementById('chat-form');
         const chatInput = document.getElementById('chat-input');
         const chatWindow = document.getElementById('chat-window');
+
+        // LangGraph UI Elements
+        const lgIcon = document.getElementById('langgraph-icon');
+        const lgStatus = document.getElementById('langgraph-status');
+        const lgDesc = document.getElementById('langgraph-desc');
+
+        const stepIcons = {
+            'scan': 'fa-magnifying-glass',
+            'fetch': 'fa-download',
+            'diagnose': 'fa-stethoscope',
+            'solve': 'fa-code',
+            'verify': 'fa-flask-vial',
+            'critic': 'fa-gavel',
+            'push': 'fa-code-branch',
+            'complete': 'fa-check-circle',
+            'error': 'fa-triangle-exclamation'
+        };
+
+        function updateLangGraphState(step, status, message) {
+            lgStatus.textContent = `[${step.toUpperCase()}] ${status.toUpperCase()}`;
+            lgDesc.textContent = message;
+
+            const iconClass = stepIcons[step] || 'fa-diagram-project';
+            lgIcon.className = `fa-solid ${iconClass} text-4xl mb-2 transition-colors duration-300`;
+
+            if (status === 'running') {
+                lgIcon.classList.add('text-blue-400', 'animate-pulse');
+            } else if (status === 'done' || status === 'success' || status === 'clean') {
+                lgIcon.classList.add('text-green-400');
+            } else if (status === 'error' || status === 'failed') {
+                lgIcon.classList.add('text-red-400');
+            } else {
+                lgIcon.classList.add('text-slate-400', 'opacity-50');
+            }
+        }
 
         // Helper to append a message to the UI
         function appendMessage(sender, text, isHtml = false) {
@@ -317,6 +353,16 @@
 
                                 let contentHtml = `<span class="${statusColor}">[${data.step.toUpperCase()}]</span> ${data.message}`;
 
+                                if (data.details) {
+                                    // Escape basic HTML for safety, though it comes from our backend
+                                    const safeDetails = data.details.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                                    contentHtml += `
+                                    <details class="mt-2 bg-slate-800 rounded p-2 border border-slate-700 cursor-pointer">
+                                        <summary class="text-xs text-slate-400 font-semibold hover:text-slate-300 select-none"><i class="fa-solid fa-chevron-right mr-1 text-[10px]"></i> View Details</summary>
+                                        <pre class="mt-2 text-[10px] text-slate-400 overflow-x-auto whitespace-pre-wrap">${safeDetails}</pre>
+                                    </details>`;
+                                }
+
                                 if (data.pr_url) {
                                     contentHtml += `<br><a href="${data.pr_url}" target="_blank" class="text-blue-400 underline mt-2 inline-block"><i class="fa-solid fa-up-right-from-square"></i> View Pull Request</a>`;
                                 }
@@ -324,6 +370,9 @@
                                 stepDiv.innerHTML = contentHtml;
                                 aiTextContainer.appendChild(stepDiv);
                                 chatWindow.scrollTop = chatWindow.scrollHeight;
+
+                                // Update the visualizer
+                                updateLangGraphState(data.step, data.status, data.message);
 
                             } catch (e) {
                                 console.error("Error parsing SSE JSON:", e, line);

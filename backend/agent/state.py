@@ -24,7 +24,11 @@ class AgentState(TypedDict):
     # 3. Solver Output
     proposed_patch: str | None
     
-    # 4. Critic Output
+    # 4. Verifier Output (Feature 1)
+    test_results: str | None
+    is_test_passed: bool | None
+    
+    # 5. Critic Output
     is_patch_approved: bool
     critic_feedback: str | None
     

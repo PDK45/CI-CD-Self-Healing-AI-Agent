@@ -2,7 +2,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from agent.state import AgentState
-from agent.nodes import diagnostician_node, researcher_node, solver_node, critic_node
+from agent.nodes import diagnostician_node, researcher_node, solver_node, verifier_node, critic_node
 
 # 1. Initialize the Graph using our TypedDict State
 workflow = StateGraph(AgentState)
@@ -11,13 +11,15 @@ workflow = StateGraph(AgentState)
 workflow.add_node("diagnostician", diagnostician_node)
 workflow.add_node("researcher", researcher_node)
 workflow.add_node("solver", solver_node)
+workflow.add_node("verifier", verifier_node)
 workflow.add_node("critic", critic_node)
 
 # 3. Define the edges (Flow of logic)
 workflow.set_entry_point("diagnostician")
 workflow.add_edge("diagnostician", "researcher")
 workflow.add_edge("researcher", "solver")
-workflow.add_edge("solver", "critic")
+workflow.add_edge("solver", "verifier")
+workflow.add_edge("verifier", "critic")
 
 # 4. Define the Conditional Edge (The "Reasoning Loop")
 def check_critic_approval(state: AgentState):
